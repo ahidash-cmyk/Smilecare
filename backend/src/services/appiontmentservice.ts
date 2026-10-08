@@ -1,0 +1,301 @@
+import pool from "../config/db";
+import { sendAppointmentConfirmation } from "./emailService";
+// CREATE APPOINTMENT
+export const createAppointment = async (
+  patient_name: string,
+  phone: string,
+  email: string,
+  doctor_id: number,
+  service_id: number,
+  appointment_date: string,
+  appointment_time: string
+) => {
+  // Check if appointment already exists
+  const check = await pool.query(
+    `
+    SELECT *
+    FROM appointments
+    WHERE doctor_id = $1
+      AND appointment_date = $2
+      AND appointment_time = $3
+    `,
+    [
+      doctor_id,
+      appointment_date,
+      appointment_time,
+    ]
+  );
+
+  if (check.rows.length > 0) {
+    throw new Error("Appointment already booked");
+  }
+
+  // Create appointment
+  const result = await pool.query(
+    `
+    INSERT INTO appointments
+    (
+      patient_name,
+      phone,
+      email,
+      doctor_id,
+      service_id,
+      appointment_date,
+      appointment_time
+    )
+    VALUES ($1,$2,$3,$4,$5,$6,$7)
+    RETURNING *
+    `,
+    [
+      patient_name,
+      phone,
+      email,
+      doctor_id,
+      service_id,
+      appointment_date,
+      appointment_time,
+    ]
+  );
+
+  const appointment = result.rows[0];
+
+  // Get doctor and service names
+  const details = await pool.query(
+    `
+    SELECT
+      d.name AS doctor_name,
+      s.title AS service_title
+    FROM doctors d
+    CROSS JOIN services s
+    WHERE d.id = $1
+      AND s.id = $2
+    `,
+    [
+      doctor_id,
+      service_id,
+    ]
+  );
+
+  const doctorName =
+    details.rows[0]?.doctor_name || "Doctor";
+
+  const serviceName =
+    details.rows[0]?.service_title || "Service";
+
+  // Send confirmation email
+ try {
+  await sendAppointmentConfirmation(
+    email,
+    patient_name,
+    doctorName,
+    serviceName,
+    appointment_date,
+    appointment_time
+  );
+
+  console.log("✅ Confirmation email sent successfully");
+
+} catch (emailError) {
+
+  console.error(
+    "⚠️ Appointment created, but email failed:",
+    emailError
+  );
+}
+  return appointment;
+};
+
+// GET ALL APPOINTMENTS
+
+export const getAllAppointments = async () => {
+  const result = await pool.query(
+    `
+    SELECT
+      a.*,
+      d.name AS doctor_name,
+      s.title AS service_title
+    FROM appointments a
+
+    LEFT JOIN doctors d
+      ON a.doctor_id = d.id
+
+    LEFT JOIN services s
+      ON a.service_id = s.id
+
+    ORDER BY
+      a.appointment_date ASC,
+      a.appointment_time ASC
+    `
+  );
+
+  return result.rows;
+};
+
+
+// GET APPOINTMENT BY ID
+
+export const getAppointmentById = async (
+  id: number
+) => {
+  const result = await pool.query(
+    `
+    SELECT
+      a.*,
+      d.name AS doctor_name,
+      s.title AS service_title
+    FROM appointments a
+
+    LEFT JOIN doctors d
+      ON a.doctor_id = d.id
+
+    LEFT JOIN services s
+      ON a.service_id = s.id
+
+    WHERE a.id = $1
+    `,
+    [id]
+  );
+
+  return result.rows[0];
+};
+
+
+// UPDATE APPOINTMENT
+
+export const updateAppointmentById = async (
+  id: number,
+  patient_name: string,
+  phone: string,
+  email: string,
+  doctor_id: number,
+  service_id: number,
+  appointment_date: string,
+  appointment_time: string
+) => {
+
+  // Check if another appointment
+  // already uses this doctor/time
+
+  const check = await pool.query(
+    `
+    SELECT *
+    FROM appointments
+
+    WHERE doctor_id = $1
+      AND appointment_date = $2
+      AND appointment_time = $3
+      AND id != $4
+    `,
+    [
+      doctor_id,
+      appointment_date,
+      appointment_time,
+      id,
+    ]
+  );
+
+  if (check.rows.length > 0) {
+    throw new Error(
+      "Appointment already booked"
+    );
+  }
+
+
+  // Update appointment
+
+  const result = await pool.query(
+    `
+    UPDATE appointments
+
+    SET
+      patient_name = $1,
+      phone = $2,
+      email = $3,
+      doctor_id = $4,
+      service_id = $5,
+      appointment_date = $6,
+      appointment_time = $7
+
+    WHERE id = $8
+
+    RETURNING *
+    `,
+    [
+      patient_name,
+      phone,
+      email,
+      doctor_id,
+      service_id,
+      appointment_date,
+      appointment_time,
+      id,
+    ]
+  );
+
+  return result.rows[0];
+};
+
+
+// DELETE APPOINTMENT
+
+export const deleteAppointmentById = async (
+  id: number
+) => {
+  await pool.query(
+    `
+    DELETE FROM appointments
+    WHERE id = $1
+    `,
+    [id]
+  );
+};
+
+
+// AVAILABLE TIMES
+
+export const getAvailableTimes = async (
+  doctorId: number,
+  date: string
+) => {
+
+  const booked = await pool.query(
+    `
+    SELECT appointment_time
+    FROM appointments
+
+    WHERE doctor_id = $1
+      AND appointment_date = $2
+    `,
+    [
+      doctorId,
+      date,
+    ]
+  );
+
+
+  const allTimes = [
+    "09:00",
+    "10:00",
+    "11:00",
+    "12:00",
+    "13:00",
+    "14:00",
+    "15:00",
+    "16:00",
+  ];
+
+
+  const bookedTimes =
+    booked.rows.map(
+      (row) =>
+        String(
+          row.appointment_time
+        ).slice(0, 5)
+    );
+
+
+  return allTimes.filter(
+    (time) =>
+      !bookedTimes.includes(time)
+  );
+};
